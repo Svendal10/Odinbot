@@ -5,7 +5,7 @@ import random
 import asyncio
 from database import DatabaseManager
 
-# --- DONNÉES ---
+# liste des questions et des réponses 
 QUIZ_NORDIC = [
     {"q": "Qui est le père de Thor ?", "r": ["odin"]},
     {"q": "Quel animal est Fenrir ?", "r": ["loup", "un loup"]},
@@ -19,6 +19,7 @@ QUIZ_NORDIC = [
     {"q": "Quel dieu a perdu une main ?", "r": ["tyr"]}
 ]
 
+# liste des récompenses
 RECOMPENSES = [
     ("Pièce de Cuivre", "Commun"),
     ("Corne à Boire", "Commun"),
@@ -30,6 +31,15 @@ RECOMPENSES = [
     ("Fragment de Mjöllnir", "Mythique")
 ]
 
+# liste des runes
+RUNES_LISTE = [
+    {"nom": "Fehu (Richesse)", "desc": "L'abondance arrive vers toi. C'est le moment d'investir !", "symbole": "ᚠ"},
+    {"nom": "Uruz (Force)", "desc": "Une grande énergie t'habite. Fais face aux obstacles !", "symbole": "ᚢ"},
+    {"nom": "Thurisaz (Chaos)", "desc": "Attention, des forces imprévisibles sont à l'œuvre...", "symbole": "ᚦ"},
+    {"nom": "Ansuz (Sagesse)", "desc": "Écoute les conseils des anciens. Odin te regarde.", "symbole": "ᚨ"},
+    {"nom": "Raidho (Voyage)", "desc": "Un déplacement ou un changement de vie est imminent.", "symbole": "ᚱ"},
+    {"nom": "Algiz (Protection)", "desc": "Tu es protégé par les dieux. N'aie pas peur.", "symbole": "ᛉ"}
+]
 class Valhalla(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -136,7 +146,7 @@ class Valhalla(commands.Cog):
             await interaction.response.send_message("Tu ne peux pas te battre contre toi-même !", ephemeral=True)
             return
 
-        # 1. Annonce du combat
+        
         await interaction.response.send_message(
             f"⚔️ **DUEL !** {interaction.user.mention} VS {adversaire.mention}\n"
             f"Préparez-vous... L'épreuve commence dans **3 secondes** !"
@@ -147,17 +157,17 @@ class Valhalla(commands.Cog):
         await interaction.edit_original_response(content=f"⚔️ **DUEL !** {interaction.user.mention} VS {adversaire.mention}\nPréparez-vous... **1...**")
         await asyncio.sleep(1)
 
-        # 2. Choix de la question
+    
         question = random.choice(QUIZ_NORDIC)
         
-        # On envoie la question dans le salon pour que tout le monde la voie
+        
         await interaction.followup.send(
             f"📜 **ÉPREUVE DE SAGESSE :**\n"
             f"# {question['q']}\n"
             f"*(Le premier qui écrit la bonne réponse gagne !)*"
         )
 
-        # 3. Vérification de la réponse
+        
         def check(m):
             return (
                 m.author in [interaction.user, adversaire] 
@@ -166,14 +176,13 @@ class Valhalla(commands.Cog):
             )
 
         try:
-            # Le bot attend le PREMIER message qui valide le check ci-dessus
-            msg = await self.bot.wait_for('message', check=check, timeout=20.0)
             
-            # Si on arrive ici, c'est que quelqu'un a donné la bonne réponse
+            msg = await self.bot.wait_for('message', check=check, timeout=20.0)
+        
             gagnant = msg.author
             perdant = adversaire if gagnant == interaction.user else interaction.user
             
-            # Gain XP
+            
             xp_gain = 30
             self.db.add_xp(gagnant.id, xp_gain)
 
@@ -185,16 +194,63 @@ class Valhalla(commands.Cog):
             await interaction.followup.send(embed=embed)
 
         except asyncio.TimeoutError:
-            # Personne n'a trouvé en 20 secondes
+            
             await interaction.followup.send("⏳ **Temps écoulé !** Vous êtes tous les deux indignes du Valhalla. (Personne ne gagne)")
-
-
-    @app_commands.command(name="arabe", description="Envoie un message spécial")
-    async def message_perso(self, interaction: discord.Interaction):
-        # Tu peux modifier le texte entre les guillemets ci-dessous
-        message = "nique ta mere, je te bz sale arabe"
+    
+    # Le tirage de runes /runes
+    @app_commands.command(name="runes", description="Consulte l'oracle pour connaître ton avenir")
+    async def runes(self, interaction: discord.Interaction):
+        rune = random.choice(RUNES_LISTE)
         
-        await interaction.response.send_message(message)
+        embed = discord.Embed(title=f"🔮 Tirage de Rune : {rune['nom']}", color=discord.Color.purple())
+        embed.add_field(name="Symbole", value=f"# {rune['symbole']}", inline=False) # Le # rend le texte énorme
+        embed.add_field(name="Interprétation", value=rune['desc'], inline=False)
+        embed.set_footer(text="Le destin est scellé.")
+        
+        await interaction.response.send_message(embed=embed)
+
+    # Le pillage /pillage
+    @app_commands.command(name="pillage", description="Pars en expédition en misant ton XP (Quitte ou Double)")
+    @app_commands.describe(mise="Combien d'XP mises-tu sur cette expédition ?")
+    async def pillage(self, interaction: discord.Interaction, mise: int):
+        
+        if mise <= 0:
+            await interaction.response.send_message("On ne part pas en expédition les mains vides !", ephemeral=True)
+            return
+
+        data = self.db.get_player_data(interaction.user.id)
+        if not data:
+            await interaction.response.send_message("Tu es trop faible. Fais `/quete` d'abord.", ephemeral=True)
+            return
+            
+        current_xp = data[0]
+        if current_xp < mise:
+            await interaction.response.send_message(f"Tu n'as que {current_xp} XP. Tu ne peux pas en miser {mise} !", ephemeral=True)
+            return
+
+        
+        await interaction.response.send_message(f"🛶 **{interaction.user.name}** embarque sur son drakkar avec **{mise} XP** en jeu...")
+        await asyncio.sleep(2) 
+        
+        
+        chance = random.randint(1, 100)
+        
+        if chance > 60: 
+            gain = mise 
+            self.db.add_xp(interaction.user.id, gain)
+            
+            embed = discord.Embed(title="Pillage Réussi ! 💰", color=discord.Color.green())
+            embed.description = f"Tu as pillé un monastère anglais !\n**Gain : +{gain} XP**"
+            embed.set_thumbnail(url="https://img.icons8.com/color/96/viking-ship.png") 
+            
+        else: 
+            perte = -mise
+            self.db.add_xp(interaction.user.id, perte)
+            
+            embed = discord.Embed(title="Échec de l'expédition... 🩸", color=discord.Color.dark_red())
+            embed.description = f"Les villageois étaient armés... Tu fuis en laissant ton butin.\n**Perte : -{mise} XP**"
+        
+        await interaction.followup.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Valhalla(bot))
