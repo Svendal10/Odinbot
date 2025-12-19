@@ -1,0 +1,203 @@
+import discord
+from discord import app_commands
+from discord.ext import commands
+import random
+import asyncio
+from database import DatabaseManager
+
+# --- DONNÉES ---
+QUIZ_NORDIC = [
+    {"q": "Qui est le père de Thor ?", "r": ["odin"]},
+    {"q": "Quel animal est Fenrir ?", "r": ["loup", "un loup"]},
+    {"q": "Comment s'appelle le monde des humains ?", "r": ["midgard"]},
+    {"q": "Quel objet permet à Thor de lancer la foudre ?", "r": ["mjollnir", "marteau"]},
+    {"q": "Qui est le dieu de la malice ?", "r": ["loki"]},
+    {"q": "Combien de pattes a Sleipnir ?", "r": ["8", "huit"]},
+    {"q": "Quel est le nom de l'arbre-monde ?", "r": ["yggdrasil"]},
+    {"q": "Qui garde les pommes de jouvence ?", "r": ["idunn"]},
+    {"q": "Où vont les guerriers morts au combat ?", "r": ["valhalla"]},
+    {"q": "Quel dieu a perdu une main ?", "r": ["tyr"]}
+]
+
+RECOMPENSES = [
+    ("Pièce de Cuivre", "Commun"),
+    ("Corne à Boire", "Commun"),
+    ("Runes", "Peu Commun"),
+    ("Bouclier Rond", "Rare"),
+    ("Hache de Bataille", "Rare"),
+    ("Casque de Jarl", "Épique"),
+    ("Amulette de Freya", "Légendaire"),
+    ("Fragment de Mjöllnir", "Mythique")
+]
+
+class Valhalla(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.db = DatabaseManager()
+
+    # le quizz /quete
+    @app_commands.command(name="quete", description="Réponds à une question pour gagner de l'XP !")
+    async def quete(self, interaction: discord.Interaction):
+        question = random.choice(QUIZ_NORDIC)
+        embed = discord.Embed(title="📜 Question", description=question['q'], color=discord.Color.blue())
+        await interaction.response.send_message(embed=embed)
+
+        def check(m):
+            return m.author == interaction.user and m.channel == interaction.channel
+
+        try:
+            msg = await self.bot.wait_for('message', check=check, timeout=30.0)
+            if msg.content.lower() in question['r']:
+                xp = 40
+                lvl_up, new_lvl = self.db.add_xp(interaction.user.id, xp)
+                txt = f"✅ **Bravo !** +{xp} XP."
+                
+                if lvl_up:
+                    item, rarity = random.choice(RECOMPENSES)
+                    self.db.add_item(interaction.user.id, item, rarity)
+                    txt += f"\n🎉 **Niveau {new_lvl} atteint !** Tu reçois : {item} ({rarity})."
+                
+                await interaction.followup.send(txt)
+            else:
+                await interaction.followup.send(f"❌ **Faux.** C'était : {question['r'][0]}")
+        except asyncio.TimeoutError:
+            await interaction.followup.send("⏳ Trop lent !")
+
+    # l'inventaire /inventaire
+    @app_commands.command(name="inventaire", description="Voir mon profil")
+    async def inventaire(self, interaction: discord.Interaction):
+        data = self.db.get_player_data(interaction.user.id)
+        if not data:
+            await interaction.response.send_message("Fais `/quete` d'abord !", ephemeral=True)
+            return
+
+        xp, level = data
+        items = self.db.get_inventory(interaction.user.id)
+        
+        embed = discord.Embed(title=f"🎒 Profil de {interaction.user.name}", color=discord.Color.gold())
+        embed.add_field(name="Niveau", value=str(level), inline=True)
+        embed.add_field(name="XP", value=str(xp), inline=True)
+        
+        liste = "\n".join([f"- {i[0]} ({i[1]})" for i in items]) if items else "Vide"
+        embed.add_field(name="Inventaire", value=liste, inline=False)
+        await interaction.response.send_message(embed=embed)
+
+    # Le classement /classement
+    @app_commands.command(name="classement", description="Top 5 des joueurs")
+    async def classement(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        top = self.db.get_top_players(5)
+        embed = discord.Embed(title="🏆 Panthéon du Valhalla", color=discord.Color.gold())
+        
+        if not top:
+            embed.description = "Aucun guerrier n'a encore fait ses preuves."
+        else:
+            description = ""
+            for i, (uid, lvl, xp) in enumerate(top, 1):
+                try:
+                    user = await self.bot.fetch_user(uid)
+                    name = user.name
+                except:
+                    name = f"Viking Disparu ({uid})"
+                
+                medaille = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "⚔️"
+                
+                
+                description += f"{medaille} **{name}** - Niv. {lvl} ({xp} XP)\n"
+            
+            embed.description = description
+
+        await interaction.followup.send(embed=embed)
+
+    # l'offrande /offrande
+    @app_commands.command(name="offrande", description="Sacrifier un objet pour de l'XP")
+    async def offrande(self, interaction: discord.Interaction):
+        items = self.db.get_inventory(interaction.user.id)
+        if not items:
+            await interaction.response.send_message("Tu n'as rien à sacrifier.", ephemeral=True)
+            return
+            
+        objet = items[-1][0] 
+        if self.db.remove_item(interaction.user.id, objet):
+            self.db.add_xp(interaction.user.id, 30)
+            await interaction.response.send_message(f"🔥 Tu as sacrifié **{objet}** (+30 XP).")
+        else:
+            await interaction.response.send_message("Erreur rituelle.", ephemeral=True)
+
+   # Le duel /duel
+    @app_commands.command(name="duel", description="Défie un joueur sur une épreuve de rapidité !")
+    async def duel(self, interaction: discord.Interaction, adversaire: discord.Member):
+        # Sécurités
+        if adversaire.bot:
+            await interaction.response.send_message("Tu ne peux pas battre une machine...", ephemeral=True)
+            return
+        if adversaire.id == interaction.user.id:
+            await interaction.response.send_message("Tu ne peux pas te battre contre toi-même !", ephemeral=True)
+            return
+
+        # 1. Annonce du combat
+        await interaction.response.send_message(
+            f"⚔️ **DUEL !** {interaction.user.mention} VS {adversaire.mention}\n"
+            f"Préparez-vous... L'épreuve commence dans **3 secondes** !"
+        )
+        await asyncio.sleep(1)
+        await interaction.edit_original_response(content=f"⚔️ **DUEL !** {interaction.user.mention} VS {adversaire.mention}\nPréparez-vous... **2...**")
+        await asyncio.sleep(1)
+        await interaction.edit_original_response(content=f"⚔️ **DUEL !** {interaction.user.mention} VS {adversaire.mention}\nPréparez-vous... **1...**")
+        await asyncio.sleep(1)
+
+        # 2. Choix de la question
+        question = random.choice(QUIZ_NORDIC)
+        
+        # On envoie la question dans le salon pour que tout le monde la voie
+        await interaction.followup.send(
+            f"📜 **ÉPREUVE DE SAGESSE :**\n"
+            f"# {question['q']}\n"
+            f"*(Le premier qui écrit la bonne réponse gagne !)*"
+        )
+
+        # 3. Vérification de la réponse
+        def check(m):
+            return (
+                m.author in [interaction.user, adversaire] 
+                and m.channel == interaction.channel 
+                and m.content.lower() in question['r']
+            )
+
+        try:
+            # Le bot attend le PREMIER message qui valide le check ci-dessus
+            msg = await self.bot.wait_for('message', check=check, timeout=20.0)
+            
+            # Si on arrive ici, c'est que quelqu'un a donné la bonne réponse
+            gagnant = msg.author
+            perdant = adversaire if gagnant == interaction.user else interaction.user
+            
+            # Gain XP
+            xp_gain = 30
+            self.db.add_xp(gagnant.id, xp_gain)
+
+            embed = discord.Embed(
+                title="🏆 DUEL TERMINÉ !",
+                description=f"**{gagnant.name}** a été le plus rapide !\nIl remporte la gloire et **+{xp_gain} XP**.",
+                color=discord.Color.green()
+            )
+            await interaction.followup.send(embed=embed)
+
+        except asyncio.TimeoutError:
+            # Personne n'a trouvé en 20 secondes
+            await interaction.followup.send("⏳ **Temps écoulé !** Vous êtes tous les deux indignes du Valhalla. (Personne ne gagne)")
+
+
+    @app_commands.command(name="arabe", description="Envoie un message spécial")
+    async def message_perso(self, interaction: discord.Interaction):
+        # Tu peux modifier le texte entre les guillemets ci-dessous
+        message = "nique ta mere, je te bz sale arabe"
+        
+        await interaction.response.send_message(message)
+
+async def setup(bot):
+    await bot.add_cog(Valhalla(bot))
+
+  
+    
